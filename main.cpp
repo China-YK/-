@@ -5,7 +5,7 @@
 #include <vector>
 #include <arpa/inet.h>
 #include <sys/wait.h>
-#define m_port 8888
+#define m_port 8889
 int getanser(std::vector<int>&p1,std::vector<char>&p2,int number_len){
     for (int i = 0;i < p2.size();i++){//先算乘法
         if (p2[i]=='*'){
@@ -49,6 +49,10 @@ void CreateServer(){
     while (1)
     {
         sock_client = accept(sock_server,(struct sockaddr*)&client,&client_len);
+        //客户端的 sock_client ≠ 服务器的 accept() 返回的 socket（每个客户端分配一个）。
+        //它们是两个不同的文件描述符，分别属于不同进程；
+        // 但它们在 TCP 层面上是“一对”通信通道的两端（所以一段write，另一端就可以read到）；
+        //服务器的 sock_server 只是“监听门口”的，不负责通信（唯一）。
         if (sock_client == -1){
             std::cout<<"accept failed\n";
             close(sock_server);
@@ -115,7 +119,36 @@ void CreateClient(){
     server.sin_family = AF_INET;
     server.sin_addr.s_addr = inet_addr("127.0.0.1");
     server.sin_port = htons(m_port);
+
+    sockaddr_in local{};
+    socklen_t len = sizeof(local);
+    getsockname(sock_client, (sockaddr*)&local, &len);
+    printf("Local IP: %s, port: %d\n",
+            inet_ntoa(local.sin_addr), ntohs(local.sin_port));
+
     int ret = connect(sock_client,(struct sockaddr*)&server,sizeof(server));
+    //以前都忽视了这个connect函数，以为只是简单的连接server服务器，其实这里挺复杂的
+    //1.会给sock_client(客户端套接字自动分配一个ip和port，前提是你主动给它bind过)
+    //在调用connect之前，sock_client只是一个空壳套接字，没有和任何IP/端口绑定
+    //当你调用connect时，Linux内核会检查：这个套接字有没有绑定本地地址(IP+Port)
+    //如果已经bind(),那就用你自己指定的
+    //如果没有bind(),内核自动完成隐式绑定(根据路由表选定的本机IP，再从系统的临时端口范围挑一个49152~65535)
+
+    //2.发起TCP三次握手，尝试连接目标服务器
+    //完成隐式绑定后，内核开始真正的连接流程:
+    //     SYN=1 Sqe=1000
+    //客户端---------------->服务器，服务器收到包后状态LISTEN------>SYN_RCVD(半连接状态)
+    //     SYN=1 ACK=1
+    //     ack=1001 Seq=3000
+    //客户端<----------------服务器,客户端收到包后状态SYN_SENT---->ESTABLISHED
+    //    ACK=1 ack=3001 Seq=1001
+    //客户端---------------->服务器,服务器收到包后状态SYN_RCBD------>ESTABLISHED
+
+    //查看sock_client绑定的IP和Port
+    getsockname(sock_client, (sockaddr*)&local, &len);
+    printf("Local IP: %s, port: %d\n",
+            inet_ntoa(local.sin_addr), ntohs(local.sin_port));
+
     if (ret == -1){
         std::cout<<"client_connect failed\n";
         return ;
@@ -163,6 +196,7 @@ void CreateClient(){
     }
     // fputs("Please input %d operators",stdout);
     fprintf(stdout,"Please input %d operators\n",number_len-1);
+    //fputs无法像printf那样输出指定内容，但是我们这里可以使用fprintf，将内容输入到stdout里面去
     for (int i=0;i<number_len-1;i++){
         char ch;
         std::cin>>ch;
